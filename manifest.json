@@ -1,7 +1,7 @@
 {
   "name": "Anota Treino — Login + Onboarding",
   "description": "Monta as telas de login, cadastro, esqueci a senha, onboarding e estados de erro com cópias dos componentes da biblioteca Anota Treino.",
-  "version": 1,
+  "version": 2,
   "code": "plugin.js",
   "icon": "icon.png",
   "permissions": [
