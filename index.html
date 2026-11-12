@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Anota Treino — Login + Onboarding</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#1f1f1f;color:#eee;font-size:13px}
+ h1{font-size:15px;margin:0 0 8px} p{color:#aaa;margin:0 0 12px;line-height:1.4}
+ .warn{background:#2a2a2a;color:#ddd;border-radius:8px;padding:10px;margin-bottom:12px;line-height:1.4}
+ .warn.bad{background:#3a1c1c;color:#f3b3b3}
+ button{width:100%;padding:12px;border:0;border-radius:999px;background:#e5e5e5;color:#171717;font-weight:700;font-size:14px;cursor:pointer}
+ button:disabled{opacity:.45;cursor:default}
+ #status{margin-top:12px;white-space:pre-wrap;color:#ccc;max-height:210px;overflow:auto;font-size:12px}
+ progress{width:100%;margin-top:10px}
+</style></head>
+<body>
+ <h1>Anota Treino — Login + Onboarding</h1>
+ <p>Monta as páginas Fluxos, Onboarding, Login, Cadastro, Esqueci a senha e Estados e erros, usando cópias dos componentes da biblioteca conectada.</p>
+ <div class="warn" id="warn">Verificando o arquivo…</div>
+ <button id="go" disabled>Montar Login + Onboarding</button>
+ <progress id="bar" max="100" value="0"></progress>
+ <div id="status">Pronto.</div>
+<script>
+ const go=document.getElementById('go'), st=document.getElementById('status'), bar=document.getElementById('bar'), warn=document.getElementById('warn');
+ go.addEventListener('click',()=>{ go.disabled=true; go.textContent='Montando…'; st.textContent='Iniciando…'; parent.postMessage({type:'generate'},'*'); });
+ window.addEventListener('message',ev=>{
+   const m=ev.data; if(!m) return;
+   if(m.type==='check'){
+     if(!m.ok){ warn.textContent=m.why; warn.className='warn bad'; go.disabled=true; return; }
+     warn.className='warn';
+     warn.textContent='Arquivo "'+m.name+'" com a biblioteca conectada ('+m.comps+' componentes). Se você já rodou este plugin aqui, as páginas que ele criou antes são apagadas e refeitas. Outras páginas ficam como estão.';
+     go.disabled=false; return;
+   }
+   if(m.type!=='progress') return;
+   if(m.total){bar.max=m.total; bar.value=m.done;}
+   st.textContent=m.msg+'\n'+st.textContent;
+   if(m.finished){
+     go.textContent=m.failed?'Não rodou — ver status':'Concluído';
+     if(m.errors&&m.errors.length) st.textContent='Erros ('+m.errors.length+'):\n'+m.errors.join('\n')+'\n\n'+st.textContent;
+     window.__result=m;
+   }
+ });
+ parent.postMessage({type:'check'},'*');
+</script>
+</body></html>
