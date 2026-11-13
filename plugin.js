@@ -2,7 +2,7 @@
    Monta as telas de login, cadastro, esqueci a senha, onboarding e estados de erro usando cópias dos
    componentes da biblioteca conectada "Anota Treino - Biblioteca". Só roda no arquivo "Login + Onboarding".
    Botão Diagnóstico: só lê a biblioteca e o arquivo, não muda nada. */
-const PLUGIN_BUILD = 'v2.1 · 2026-11-12';
+const PLUGIN_BUILD = 'v2.2 · 2026-11-12';
 const FILE_NAME = 'Login + Onboarding';
 const LIB_NAME = 'Anota Treino - Biblioteca';
 const UI_URL = 'https://estudio-orsi.github.io/anota-treino-telas-plugin/index.html';
@@ -431,14 +431,20 @@ const Btn = (label, o) => {
     { name: o.name || ('Botão ' + label), texts: { Label: label }, w: o.w === undefined ? 'fill' : o.w, go: o.go, alignSelf: o.alignSelf });
 };
 const Link = (label, o) => Btn(label, Object.assign({ v: 'link', size: 'sm', w: null, name: 'Link ' + label }, o || {}));
-const FieldEmpty = (label, ph, help) => C('Field', { State: 'default' }, { name: 'Campo ' + label, w: 'fill',
-  texts: { 'Label/Text': label, 'Input/Value': ph, 'Description': help }, hide: help ? [] : ['Description'] });
-const FieldError = (label, value, msg) => C('Field', { State: 'error' }, { name: 'Campo ' + label + ' (erro)', w: 'fill',
-  texts: { 'Label/Text': label, 'Input/Value': value, 'Error/Message': msg } });
-const FieldFilled = (label, value, o) => F({ name: 'Campo ' + label, gap: 8, w: 'fill' }, [
-  C('Label', { State: 'default' }, { name: 'Label', texts: { Text: label } }),
-  C('Input', { State: o && o.focus ? 'focus' : 'filled', Size: 'md' }, { name: 'Input', texts: { Value: value }, w: 'fill' }),
-  o && o.help ? T(o.help, 'body/sm', 'muted-foreground', { name: 'Ajuda', w: 'fill' }) : null]);
+// Campos montados com cópias do Label e do Input no tamanho lg, para ter a mesma altura dos botões lg das telas.
+// (O componente Field da biblioteca usa Input md, 40 px; os botões das telas são lg, 48 px.)
+const FIELD_SIZE = 'lg';
+const FieldBox = (label, input, below, name) => F({ name: name || ('Campo ' + label), gap: 8, w: 'fill' }, [
+  C('Label', { State: 'default' }, { name: 'Label', texts: { Text: label } }), input, below || null]);
+const FieldEmpty = (label, ph, help) => FieldBox(label,
+  C('Input', { State: 'default', Size: FIELD_SIZE }, { name: 'Input', texts: { Value: ph }, w: 'fill' }),
+  help ? T(help, 'body/xs', 'muted-foreground', { name: 'Ajuda', w: 'fill' }) : null);
+const FieldError = (label, value, msg) => FieldBox(label,
+  C('Input', { State: 'error', Size: FIELD_SIZE }, { name: 'Input', texts: { Value: value }, w: 'fill' }),
+  T(msg, 'body/xs', 'destructive', { name: 'Erro', w: 'fill' }), 'Campo ' + label + ' (erro)');
+const FieldFilled = (label, value, o) => FieldBox(label,
+  C('Input', { State: o && o.focus ? 'focus' : 'filled', Size: FIELD_SIZE }, { name: 'Input', texts: { Value: value }, w: 'fill' }),
+  o && o.help ? T(o.help, 'body/xs', 'muted-foreground', { name: 'Ajuda', w: 'fill' }) : null);
 function field(label, ph, st) {
   st = st || {};
   if (st.error) return FieldError(label, st.value || ph, st.error);
@@ -798,7 +804,7 @@ for (const p of PAGES) for (const r of p.rows) for (const id of r.ids) PAGE_OF[i
 // ---------------------------------------------------------------- page layout helpers (canvas: títulos, notas, setas)
 // Cada coluna: a tela em cima e a nota logo abaixo, na mesma largura. Nada fica por cima da tela.
 const COL_W = W + 200;          // distância entre telas na linha
-const HEAD_H = 110;             // título e descrição da linha
+const HEAD_H = 190;             // título e descrição da linha; folga para a etiqueta de fluxo e o nome da tela que o Penpot desenha acima da primeira tela
 const NOTE_GAP = 32;            // espaço entre a tela e a nota
 const NOTE_MAX = 260;           // altura reservada para a nota
 const ROW_H = HEAD_H + H + NOTE_GAP + NOTE_MAX + 120;
