@@ -1,6 +1,8 @@
-/* Anota Treino — Login + Onboarding (Penpot plugin).
+/* Anota Treino — Telas Login e Onboarding (Penpot plugin).
    Monta as telas de login, cadastro, esqueci a senha, onboarding e estados de erro usando cópias dos
-   componentes da biblioteca conectada "Anota Treino - Biblioteca". Só roda no arquivo "Login + Onboarding". */
+   componentes da biblioteca conectada "Anota Treino - Biblioteca". Só roda no arquivo "Login + Onboarding".
+   Botão Diagnóstico: só lê a biblioteca e o arquivo, não muda nada. */
+const PLUGIN_BUILD = 'v2.1 · 2026-11-12';
 const FILE_NAME = 'Login + Onboarding';
 const LIB_NAME = 'Anota Treino - Biblioteca';
 const UI_URL = 'https://estudio-orsi.github.io/anota-treino-telas-plugin/index.html';
@@ -8,21 +10,27 @@ const PD_NS = 'anotatreino';          // shared plugin data namespace (não depe
 const PD_KEY = 'telas-login-onboarding';
 const W = 393, H = 852;
 
-// ---------------------------------------------------------------- utils
-const LOG = [], ERRORS = [];
-const STATS = { pages: 0, screens: 0, copies: 0, texts: 0, flexBoards: 0, interactions: 0, flows: 0, arrows: 0 };
+// ---------------------------------------------------------------- utils + log
+const LOG = [], ERRORS = [], ERRLIST = [], WARNINGS = [];
+const STATS = { pages: 0, screens: 0, copies: 0, texts: 0, flexBoards: 0, interactions: 0, flows: 0, arrows: 0,
+  textOverrides: 0, textOverridesFixed: 0, textOverridesFailed: 0, variantFallbacks: 0, implicitFlowsRemoved: 0, layoutWarnings: 0, layoutWaits: 0, layoutWaitTimeouts: 0 };
 const USED = {};   // component key -> count
+const FALLBACKS = [];   // {set, requested, used, available}
+let CTX = { page: '', screen: '' };
 let PROGRESS = { done: 0, total: 1 };
 function say(msg, extra) {
-  LOG.push(msg);
+  LOG.push({ t: Date.now(), msg: msg });
   try { console.log('[Login + Onboarding] ' + msg); } catch (e) {}
   try { penpot.ui.sendMessage(Object.assign({ type: 'progress', msg: msg, done: PROGRESS.done, total: PROGRESS.total }, extra || {})); } catch (e) {}
 }
-function err(where, e) {
-  const m = where + ': ' + (e && e.message ? e.message : String(e));
+function errMsg(e) { return e && e.message ? e.message : String(e); }
+function err(where, e, extra) {
+  const m = where + ': ' + errMsg(e);
   ERRORS.push(m);
+  ERRLIST.push(Object.assign({ where: where, message: errMsg(e), page: CTX.page, screen: CTX.screen }, extra || {}));
   try { console.warn('[Login + Onboarding] ' + m); } catch (x) {}
 }
+function warn(kind, extra) { WARNINGS.push(Object.assign({ kind: kind, page: CTX.page, screen: CTX.screen }, extra || {})); }
 const hasTimer = typeof setTimeout === 'function';
 const sleep = (ms) => (hasTimer ? new Promise(r => setTimeout(r, ms)) : Promise.resolve());
 async function waitFor(fn, ms, step) {
@@ -34,50 +42,144 @@ async function waitFor(fn, ms, step) {
     await sleep(step || 40);
   }
 }
-function tryDo(where, fn) { try { return fn(); } catch (e) { err(where, e); return undefined; } }
+function tryDo(where, fn, extra) { try { return fn(); } catch (e) { err(where, e, extra); return undefined; } }
+function safe(fn, dflt) { try { const v = fn(); return v === undefined ? dflt : v; } catch (e) { return dflt; } }
+// Espera o Penpot terminar de medir textos e recalcular layouts (penpot.waitForLayoutUpdate, Penpot 2.19+).
+let SETTLE_TIMEOUTS_IN_A_ROW = 0;
+async function settle(shape, ms) {
+  STATS.layoutWaits++;
+  if (SETTLE_TIMEOUTS_IN_A_ROW >= 3) { await sleep(250); return false; }   // o Penpot não está liberando: segue só com pausas curtas
+  const fnShape = shape && safe(() => typeof shape.waitForLayoutUpdate === 'function', false);
+  const fnAll = safe(() => typeof penpot.waitForLayoutUpdate === 'function', false);
+  try {
+    if (fnShape) { await shape.waitForLayoutUpdate(ms || 8000); SETTLE_TIMEOUTS_IN_A_ROW = 0; return true; }
+    if (fnAll) { await penpot.waitForLayoutUpdate(ms || 8000); SETTLE_TIMEOUTS_IN_A_ROW = 0; return true; }
+  } catch (e) { STATS.layoutWaitTimeouts++; SETTLE_TIMEOUTS_IN_A_ROW++; warn('espera de layout', { message: errMsg(e) }); return false; }
+  await sleep(400);
+  return false;
+}
 
 // ---------------------------------------------------------------- library
 let LIB = null;
-const SETS = {};      // set name -> [{comp, props}]
+const SETS = {};      // nome normalizado do conjunto -> [{comp, props, id, name, path}]
 const COLORS = {};    // token name -> LibraryColor
 const TYPOS = {};     // 'path/name' -> LibraryTypography
+const LIBINFO = { listed: 0, expanded: 0, variantSets: 0, sets: 0 };
 const FALLBACK_HEX = { background: '#0a0a0a', foreground: '#fafafa', card: '#171717', 'muted-foreground': '#a1a1a1', brand: '#7ab8d9', border: '#2a2a2a', destructive: '#e5484d', overlay: '#000000', success: '#6fbf9f', warning: '#d9b26f' };
+const norm = (s) => String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim();
+const normPath = (s) => String(s || '').split('/').map(x => x.trim()).filter(Boolean).join(' / ');
 
 function findLibrary() {
   let libs = [];
   try { libs = penpot.library.connected || []; } catch (e) { libs = []; }
-  const cur = penpot.currentFile;
+  const cur = safe(() => penpot.currentFile, null);
+  const curId = cur ? safe(() => cur.id, null) : null;
   for (const l of libs) {
-    try { if (l.name === LIB_NAME && (!cur || l.id !== cur.id)) return l; } catch (e) {}
+    try { if (norm(l.name) === norm(LIB_NAME) && l.id !== curId) return l; } catch (e) {}
   }
   return null;
 }
+// "Variant=default, Size=lg" -> {Variant:'default', Size:'lg'}
+function parseNameProps(name) {
+  const o = {}; let ok = false;
+  String(name || '').split(',').forEach(p => { const i = p.indexOf('='); if (i > 0) { o[p.slice(0, i).trim()] = p.slice(i + 1).trim(); ok = true; } });
+  return ok ? o : null;
+}
+function propsOf(c) {
+  const vp = safe(() => c.variantProps, null);
+  const o = {};
+  if (vp && typeof vp === 'object') for (const k of Object.keys(vp)) o[k] = vp[k];
+  if (Object.keys(o).length) return o;
+  return parseNameProps(safe(() => c.name, '')) || {};
+}
+// Na API do Penpot, library.components só traz UMA variante de cada conjunto (a principal);
+// as outras vêm de component.variants.variantComponents().
+function expandComponents(lib) {
+  const out = []; const seen = {};
+  const listed = safe(() => lib.components, []) || [];
+  LIBINFO.listed = listed.length; LIBINFO.variantSets = 0;
+  for (const c of listed) {
+    const cid = safe(() => c.id, null);
+    const isV = safe(() => !!c.isVariant(), false);
+    if (!isV) { if (!seen[cid]) { seen[cid] = 1; out.push({ comp: c, primary: null }); } continue; }
+    LIBINFO.variantSets++;
+    let members = [];
+    const vs = safe(() => c.variants, null);
+    if (vs) { try { members = vs.variantComponents() || []; } catch (e) { err('variantComponents', e, { component: safe(() => c.name, '?') }); } }
+    if (!members.length) members = [c];
+    if (!members.some(m => safe(() => m.id, 1) === cid)) members = members.concat([c]);
+    for (const m of members) { const mid = safe(() => m.id, null); if (seen[mid]) continue; seen[mid] = 1; out.push({ comp: m, primary: c }); }
+  }
+  LIBINFO.expanded = out.length;
+  return out;
+}
+function setKeysFor(c, primary) {
+  const keys = [];
+  const name = safe(() => c.name, '') || '';
+  const path = normPath(safe(() => c.path, ''));
+  if (primary) {
+    const pn = safe(() => primary.name, '') || '';
+    const pp = normPath(safe(() => primary.path, ''));
+    if (pn && pn.indexOf('=') < 0) keys.push(pn, (pp ? pp + ' / ' : '') + pn);
+    if (name && name.indexOf('=') < 0) keys.push(name, (path ? path + ' / ' : '') + name);
+    if (path) { keys.push(path); keys.push(path.split(' / ').pop()); }
+    if (pp) { keys.push(pp); keys.push(pp.split(' / ').pop()); }
+  } else {
+    keys.push((path ? path + ' / ' : '') + name, name);
+  }
+  return Array.from(new Set(keys.filter(Boolean).map(norm)));
+}
 function indexLibrary(lib) {
   for (const k of Object.keys(SETS)) delete SETS[k];
-  for (const c of (lib.components || [])) {
+  for (const k of Object.keys(COLORS)) delete COLORS[k];
+  for (const k of Object.keys(TYPOS)) delete TYPOS[k];
+  for (const { comp: c, primary } of expandComponents(lib)) {
     try {
-      let isV = false; try { isV = !!c.isVariant(); } catch (e) { isV = false; }
-      if (isV) {
-        const vp = c.variantProps || {};
-        (SETS[c.name] = SETS[c.name] || []).push({ comp: c, props: vp });
-      } else {
-        const key = (c.path ? c.path.split('/').map(x => x.trim()).filter(Boolean).join(' / ') + ' / ' : '') + c.name;
-        (SETS[key] = SETS[key] || []).push({ comp: c, props: {} });
+      const entry = { comp: c, props: primary ? propsOf(c) : {}, id: safe(() => c.id, ''), name: safe(() => c.name, ''), path: safe(() => c.path, '') };
+      for (const k of setKeysFor(c, primary)) {
+        const list = (SETS[k] = SETS[k] || []);
+        if (!list.some(x => x.id === entry.id)) list.push(entry);
       }
     } catch (e) { err('index component', e); }
   }
-  for (const c of (lib.colors || [])) { try { COLORS[c.name] = c; } catch (e) {} }
-  for (const t of (lib.typographies || [])) { try { TYPOS[(t.path ? t.path.trim() + '/' : '') + t.name] = t; } catch (e) {} }
+  LIBINFO.sets = Object.keys(SETS).length;
+  for (const c of (safe(() => lib.colors, []) || [])) { try { COLORS[c.name] = c; } catch (e) {} }
+  for (const t of (safe(() => lib.typographies, []) || [])) { try { TYPOS[(t.path ? normPath(t.path).replace(/ \/ /g, '/') + '/' : '') + t.name] = t; } catch (e) {} }
+}
+function availableValues(list) {
+  const av = {};
+  for (const x of list) for (const k of Object.keys(x.props)) { (av[k] = av[k] || []); if (av[k].indexOf(String(x.props[k])) < 0) av[k].push(String(x.props[k])); }
+  return av;
+}
+// Acha a variante pedida. quiet=true: não registra erro (usado no diagnóstico).
+function resolveComp(set, props) {
+  const list = SETS[norm(set)];
+  if (!list || !list.length) return { comp: null, why: 'conjunto não existe' };
+  props = props || {};
+  const want = Object.keys(props);
+  let best = null, bestScore = -1;
+  for (const x of list) {
+    const have = {}; for (const k of Object.keys(x.props)) have[norm(k)] = norm(x.props[k]);
+    let score = 0;
+    for (const k of want) if (have[norm(k)] === norm(props[k])) score++;
+    if (score > bestScore) { best = x; bestScore = score; }
+  }
+  return { comp: best.comp, exact: bestScore === want.length, entry: best, list: list };
 }
 function findComp(set, props) {
-  const list = SETS[set];
-  if (!list || !list.length) throw new Error('Componente "' + set + '" não existe na biblioteca');
-  props = props || {};
-  const keys = Object.keys(props);
-  const hit = list.find(x => keys.every(k => String(x.props[k]) === String(props[k])));
-  if (hit) return hit.comp;
-  err('variante', new Error(set + ' ' + JSON.stringify(props) + ' não encontrada; usei a primeira variante'));
-  return list[0].comp;
+  const r = resolveComp(set, props);
+  if (!r.comp) {
+    const e = new Error('Componente "' + set + '" não existe na biblioteca');
+    err('componente', e, { component: set, requested: props || {} });
+    e.logged = true; throw e;
+  }
+  if (!r.exact) {
+    STATS.variantFallbacks++;
+    const fb = { component: set, requested: props, used: r.entry.props, usedName: r.entry.name, available: availableValues(r.list) };
+    FALLBACKS.push(Object.assign({ page: CTX.page, screen: CTX.screen }, fb));
+    err('variante', new Error(set + ' ' + JSON.stringify(props) + ' não encontrada; usei ' + JSON.stringify(r.entry.props)), fb);
+  }
+  return r.comp;
 }
 function fill(token) {
   const c = COLORS[token];
@@ -93,18 +195,62 @@ function stroke(token, w, align, extra) {
 }
 
 // ---------------------------------------------------------------- spec constructors
-// F: board with flex layout. T: text. C: copy of a library component. 
+// F: board with flex layout. T: text. C: copy of a library component.
 function F(o, kids) { return Object.assign({ t: 'F', kids: (kids || []).filter(Boolean) }, o || {}); }
 function T(text, typo, color, o) { return Object.assign({ t: 'T', text: String(text), typo: typo || 'body/sm', color: color || 'foreground' }, o || {}); }
 function C(set, props, o) { return Object.assign({ t: 'C', set: set, props: props || {} }, o || {}); }
 const Space = (name) => F({ name: name || 'Espaço', w: 'fill', h: 'fill' });
 
+// ---------------------------------------------------------------- text size estimate
+// O Penpot mede o texto depois, de forma assíncrona. Damos um tamanho inicial próximo do real
+// para o auto layout já nascer certo mesmo antes (ou sem) essa medição.
+function typoMetrics(name) {
+  const t = TYPOS[name];
+  let fs = 14, lh = 1.4, fw = 400, ls = 0, up = false;
+  if (t) {
+    fs = parseFloat(safe(() => t.fontSize, '')) || fs;
+    lh = parseFloat(safe(() => t.lineHeight, '')) || lh;
+    fw = parseInt(safe(() => t.fontWeight, ''), 10) || fw;
+    ls = parseFloat(safe(() => t.letterSpacing, '')) || 0;
+    up = /upper/i.test(safe(() => t.textTransform, '') || '');
+  }
+  return { fs: fs, lh: lh < 4 ? lh * fs : lh, fw: fw, ls: ls, up: up };
+}
+function textWidth(str, m) {
+  let w = 0;
+  for (const ch of str) {
+    let f;
+    if (ch === ' ') f = 0.28;
+    else if (/[il.,:;'|!·•]/.test(ch)) f = 0.3;
+    else if (/[mwMW]/.test(ch)) f = 0.86;
+    else if (/[A-ZÀ-Ý]/.test(ch) || (m.up && /[a-zà-ÿ]/.test(ch))) f = 0.68;
+    else if (/[0-9]/.test(ch)) f = 0.6;
+    else f = 0.56;
+    w += f * m.fs + m.ls;
+  }
+  return w * (m.fw >= 700 ? 1.08 : m.fw >= 600 ? 1.06 : m.fw >= 500 ? 1.03 : 1);
+}
+function estimateText(str, typo, avail) {
+  const m = typoMetrics(typo);
+  let lines = 0, maxw = 0;
+  for (const para of String(str).split('\n')) {
+    if (!avail) { maxw = Math.max(maxw, textWidth(para, m)); lines++; continue; }
+    let line = '', n = 1;
+    for (const word of para.split(' ')) {
+      const cand = line ? line + ' ' + word : word;
+      if (line && textWidth(cand, m) > avail) { n++; line = word; } else line = cand;
+      maxw = Math.max(maxw, Math.min(avail, textWidth(line, m)));
+    }
+    lines += n;
+  }
+  return { w: Math.ceil(maxw) + 2, h: Math.ceil(lines * m.lh) };
+}
+
 // ---------------------------------------------------------------- shape building
 function setSizing(s, axis, val) {
   const key = axis === 'h' ? 'horizontalSizing' : 'verticalSizing';
-  try { if (s.layoutChild) { s.layoutChild[key] = val; return true; } } catch (e) {}
+  try { if (s.layoutChild) { s.layoutChild[key] = val; return true; } } catch (e) { err('sizing ' + s.name + ' ' + key + '=' + val, e); return false; }
   try { if (s.flex) { s.flex[key] = val; return true; } } catch (e) {}
-  try { s[key] = val; return true; } catch (e) { err('sizing ' + s.name + ' ' + key + '=' + val, e); }
   return false;
 }
 function pads(p) {
@@ -144,14 +290,16 @@ function findIn(root, path) {
   return cur;
 }
 const NAV = [];   // {shape, to}
+const OVR = [];   // textos trocados nas cópias, para conferir depois
 let SCREEN_SHAPES = {};
-function build(n, parent) {
+function build(n, parent, avail) {
   let s = null;
   switch (n.t) {
     case 'F': {
       s = penpot.createBoard();
       s.name = n.name || 'Grupo';
-      const w0 = typeof n.w === 'number' ? n.w : 10, h0 = typeof n.h === 'number' ? n.h : 10;
+      const own = typeof n.w === 'number' ? n.w : (avail || W);
+      const w0 = typeof n.w === 'number' ? n.w : own, h0 = typeof n.h === 'number' ? n.h : 10;
       s.resize(Math.max(w0, 0.01), Math.max(h0, 0.01));
       tryDo('clip ' + s.name, () => { s.clipContent = !!n.clip; });
       tryDo('fills ' + s.name, () => { s.fills = n.fill ? [fill(n.fill)] : []; });
@@ -170,8 +318,9 @@ function build(n, parent) {
       fl.alignItems = n.ai || 'start';
       fl.justifyContent = n.jc || 'start';
       if (n.wrap) tryDo('alignContent', () => { fl.alignContent = 'start'; });
+      const inner = Math.max(40, own - p[1] - p[3]);
       for (const k of n.kids) {
-        try { build(k, s); } catch (e) { err('build ' + (k.name || k.set || k.t) + ' em ' + s.name, e); }
+        try { build(k, s, inner); } catch (e) { if (!e.logged) err('build ' + (k.name || k.set || k.t) + ' em ' + s.name, e, k.t === 'C' ? { component: k.set, requested: k.props } : {}); }
       }
       if (n.w == null) n.w = 'hug';
       if (n.h == null) n.h = 'hug';
@@ -189,10 +338,12 @@ function build(n, parent) {
       else err('tipografia', new Error(n.typo + ' não existe na biblioteca'));
       tryDo('text fill', () => { s.fills = [fill(n.color)]; });
       if (n.align) tryDo('align', () => { s.align = n.align; });
+      const boxW = n.w === 'fill' ? (avail || W) : typeof n.w === 'number' ? n.w : null;
+      const est = estimateText(n.text, n.typo, boxW);
+      tryDo('tamanho inicial do texto', () => { s.resize(Math.max(1, boxW || est.w), Math.max(1, est.h)); });
+      tryDo('grow', () => { s.growType = boxW ? 'auto-height' : 'auto-width'; });
       placeChild(s, n, parent);
-      if (n.w === 'fill') { tryDo('grow', () => { s.growType = 'auto-height'; }); setSizing(s, 'h', 'fill'); }
-      else if (typeof n.w === 'number') { tryDo('textw', () => { s.resize(n.w, Math.max(s.height || 10, 1)); }); tryDo('grow', () => { s.growType = 'auto-height'; }); }
-      else tryDo('grow', () => { s.growType = 'auto-width'; });
+      if (n.w === 'fill') setSizing(s, 'h', 'fill');
       break;
     }
     case 'C': {
@@ -207,29 +358,70 @@ function build(n, parent) {
       for (const p in (n.texts || {})) {
         const v = n.texts[p]; if (v == null || v === '') continue;
         const tx = findIn(s, p);
-        if (!tx || tx.type !== 'text') { err('texto', new Error('"' + p + '" não achado em ' + n.set)); continue; }
-        tryDo('characters ' + p, () => { tx.characters = String(v); });
+        if (!tx || tx.type !== 'text') { err('texto', new Error('"' + p + '" não achado em ' + n.set), { component: n.set, requested: n.props, layer: p }); continue; }
+        STATS.textOverrides++;
+        tryDo('characters ' + p, () => { tx.characters = String(v); }, { component: n.set, layer: p });
+        OVR.push({ shape: tx, value: String(v), component: n.set, layer: p, screen: CTX.screen });
       }
       for (const p of (n.hide || [])) {
         const h = findIn(s, p);
-        if (!h) { err('esconder', new Error('"' + p + '" não achado em ' + n.set)); continue; }
-        tryDo('hidden ' + p, () => { h.hidden = true; });
+        if (!h) { err('esconder', new Error('"' + p + '" não achado em ' + n.set), { component: n.set, requested: n.props, layer: p }); continue; }
+        tryDo('hidden ' + p, () => { h.hidden = true; }, { component: n.set, layer: p });
       }
       if (n.w === 'fill') setSizing(s, 'h', 'fill');
       if (n.h === 'fill') setSizing(s, 'v', 'fill');
       if (n.go) {
         const src = n.goPath ? findIn(s, n.goPath) : s;
-        if (src) NAV.push({ shape: src, to: n.go }); else err('interação', new Error('"' + n.goPath + '" não achado em ' + n.set));
+        if (src) NAV.push({ shape: src, to: n.go }); else err('interação', new Error('"' + n.goPath + '" não achado em ' + n.set), { component: n.set, layer: n.goPath });
       }
       for (const g of (n.gos || [])) {
         const src = findIn(s, g[0]);
-        if (src) NAV.push({ shape: src, to: g[1] }); else err('interação', new Error('"' + g[0] + '" não achado em ' + n.set));
+        if (src) NAV.push({ shape: src, to: g[1] }); else err('interação', new Error('"' + g[0] + '" não achado em ' + n.set), { component: n.set, layer: g[0] });
       }
       break;
     }
     default: throw new Error('nó desconhecido ' + n.t);
   }
   return s;
+}
+// Confere se os textos trocados nas cópias ficaram (a sincronização com a biblioteca pode desfazer).
+async function verifyOverrides() {
+  let fixed = 0, failed = 0;
+  for (const o of OVR) {
+    const now = safe(() => o.shape.characters, null);
+    if (now === o.value) continue;
+    try { o.shape.characters = o.value; fixed++; } catch (e) { failed++; err('texto não ficou', e, { component: o.component, layer: o.layer, screen: o.screen, expected: o.value, found: now }); continue; }
+    warn('texto refeito', { component: o.component, layer: o.layer, screen: o.screen, expected: o.value, found: now });
+  }
+  if (fixed) { await settle(null, 12000); for (const o of OVR) { const now = safe(() => o.shape.characters, null); if (now !== o.value) { failed++; err('texto não ficou', new Error('depois de refazer'), { component: o.component, layer: o.layer, screen: o.screen, expected: o.value, found: now }); } } }
+  STATS.textOverridesFixed += fixed; STATS.textOverridesFailed += failed;
+  OVR.length = 0;
+}
+// Procura irmãos que se sobrepõem dentro de cada auto layout de uma tela (só leitura).
+function rectOf(s) { return { x: safe(() => s.x, 0), y: safe(() => s.y, 0), w: safe(() => s.width, 0), h: safe(() => s.height, 0) }; }
+function checkLayout(screen, screenId) {
+  let found = 0;
+  const walk = (s, path, depth) => {
+    if (found > 40 || depth > 8) return;
+    const kids = kidsOf(s).filter(k => !safe(() => k.hidden, false) && !safe(() => k.layoutChild && k.layoutChild.absolute, false));
+    const isFlex = !!safe(() => s.flex, null);
+    if (isFlex && kids.length > 1) {
+      const rs = kids.map(rectOf);
+      for (let i = 0; i < kids.length; i++) for (let j = i + 1; j < kids.length; j++) {
+        const a = rs[i], b = rs[j];
+        const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x), oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+        if (ox > 2 && oy > 2) { found++; warn('sobreposição', { screen: screenId, parent: path, a: kids[i].name, b: kids[j].name, ra: a, rb: b }); }
+      }
+    }
+    const pr = rectOf(s);
+    if (depth > 0 && safe(() => s.clipContent, false)) for (const k of kids) {
+      const r = rectOf(k);
+      if (r.x < pr.x - 2 || r.y < pr.y - 2 || r.x + r.w > pr.x + pr.w + 2 || r.y + r.h > pr.y + pr.h + 2) { found++; warn('cortado', { screen: screenId, parent: path, child: k.name, r: r, pr: pr }); }
+    }
+    for (const k of kids) if (safe(() => k.type, '') === 'board') walk(k, path + ' › ' + k.name, depth + 1);
+  };
+  walk(screen, screenId, 0);
+  STATS.layoutWarnings += found;
 }
 
 // ---------------------------------------------------------------- reusable pieces (só cópias da biblioteca + quadros de layout)
@@ -604,16 +796,19 @@ const PAGE_OF = {};
 for (const p of PAGES) for (const r of p.rows) for (const id of r.ids) PAGE_OF[id] = p.name;
 
 // ---------------------------------------------------------------- page layout helpers (canvas: títulos, notas, setas)
+// Cada coluna: a tela em cima e a nota logo abaixo, na mesma largura. Nada fica por cima da tela.
 const COL_W = W + 200;          // distância entre telas na linha
-const NOTE_H = 150;             // espaço da nota acima da tela
-const ROW_H = 60 + NOTE_H + H + 220;
+const HEAD_H = 110;             // título e descrição da linha
+const NOTE_GAP = 32;            // espaço entre a tela e a nota
+const NOTE_MAX = 260;           // altura reservada para a nota
+const ROW_H = HEAD_H + H + NOTE_GAP + NOTE_MAX + 120;
 const BADGE = { real: ['success', 'Real'], variacao: ['outline', 'Variação da tela real'], proposta: ['brand', 'Proposta'] };
 function topText(text, typo, color, x, y, w) {
-  const s = build(T(text, typo, color, w ? { w: w } : {}), null);
+  const s = build(T(text, typo, color, w ? { w: w } : {}), null, w || null);
   s.x = x; s.y = y;
   return s;
 }
-function topBoard(spec, x, y) { const s = build(spec, null); s.x = x; s.y = y; return s; }
+function topBoard(spec, x, y) { const s = build(spec, null, typeof spec.w === 'number' ? spec.w : W); s.x = x; s.y = y; return s; }
 function arrow(x1, y1, x2, y2, name) {
   const p = penpot.createPath();
   p.name = name || 'Seta';
@@ -638,7 +833,8 @@ function noteSpec(sc) {
   return F({ name: 'Nota — ' + sc.id, gap: 8, w: W }, [
     C('Badge', { Variant: b[0] }, { name: 'Selo', texts: { Label: b[1] } }),
     T(sc.id + ' · ' + sc.name, 'heading/lg', 'foreground', { name: 'Nome', w: 'fill' }),
-    T(originText(sc.id) + (sc.ref ? '\n' + sc.ref : ''), 'body/sm', 'muted-foreground', { name: 'Origem', w: 'fill' })]);
+    T(originText(sc.id), 'body/sm', 'muted-foreground', { name: 'Origem', w: 'fill' }),
+    sc.ref ? T(sc.ref, 'body/sm', 'muted-foreground', { name: 'Referência', w: 'fill' }) : null]);
 }
 function screenSpec(sc) {
   const d = sc.def();
@@ -649,6 +845,7 @@ function sumStatus(ids) {
   for (const id of ids) c[S[id].status]++;
   return ids.length + ' telas · ' + c.real + ' reais · ' + c.variacao + ' variações de telas reais · ' + c.proposta + ' propostas';
 }
+function focus(shape) { try { penpot.viewport.zoomIntoView([shape]); } catch (e) {} }
 
 // ---------------------------------------------------------------- pages
 async function newPage(name) {
@@ -662,9 +859,22 @@ async function newPage(name) {
   STATS.pages++;
   return page;
 }
+function flowsOf(page) { return safe(() => page.flows, []) || []; }
+function startId(f) { const b = safe(() => f.startingBoard, null); return b ? safe(() => b.id, null) : null; }
+// Um fluxo por linha. Se o Penpot já criou um fluxo automático começando na mesma tela, só renomeia.
+function ensureFlow(page, title, board) {
+  const bid = safe(() => board.id, null);
+  const existing = flowsOf(page).find(f => startId(f) === bid);
+  if (existing) {
+    if (safe(() => existing.name, '') !== title) tryDo('renomear fluxo ' + title, () => { existing.name = title; });
+    return true;
+  }
+  try { page.createFlow(title, board); return true; } catch (e) { err('fluxo ' + title, e, { board: safe(() => board.name, '') }); return false; }
+}
 async function buildScreenPage(P) {
   const page = await newPage(P.name);
-  SCREEN_SHAPES = {}; NAV.length = 0;
+  CTX = { page: P.name, screen: '' };
+  SCREEN_SHAPES = {}; NAV.length = 0; OVR.length = 0;
   const all = [].concat(...P.rows.map(r => r.ids));
   topText(P.name, 'display/4xl', 'foreground', 0, 0);
   topText(sumStatus(all), 'body/base', 'muted-foreground', 0, 56, 1400);
@@ -672,17 +882,21 @@ async function buildScreenPage(P) {
   for (const r of P.rows) {
     topText(r.title, 'heading/2xl', 'foreground', 0, y);
     topText(r.desc, 'body/base', 'muted-foreground', 0, y + 40, 1600);
-    const sy = y + 60 + NOTE_H;
-    r.ids.forEach((id, i) => {
-      const sc = S[id]; const x = i * COL_W;
+    const sy = y + HEAD_H;
+    for (let i = 0; i < r.ids.length; i++) {
+      const id = r.ids[i]; const sc = S[id]; const x = i * COL_W;
+      CTX.screen = id;
       say('Tela ' + id + ' — ' + sc.name);
       try {
-        topBoard(noteSpec(sc), x, y + 90);
         const s = topBoard(screenSpec(sc), x, sy);
         SCREEN_SHAPES[id] = s; STATS.screens++;
+        topBoard(noteSpec(sc), x, sy + H + NOTE_GAP);
+        focus(s);
+        await settle(s, 8000);
       } catch (e) { err('tela ' + id, e); }
       PROGRESS.done++;
-    });
+    }
+    CTX.screen = '';
     // setas entre telas vizinhas ligadas por um fluxo
     for (let i = 0; i + 1 < r.ids.length; i++) {
       const e = EDGES.find(x => x.from === r.ids[i] && x.to === r.ids[i + 1]);
@@ -692,21 +906,39 @@ async function buildScreenPage(P) {
       topText(e.label, 'body/sm-medium', 'brand', x1, ay - 52, x2 - x1);
     }
     y += ROW_H;
-    await sleep(10);
+  }
+  await settle(null, 12000);
+  // fluxos antes das interações: assim o Penpot não cria fluxos automáticos nessas telas
+  const firsts = {};
+  for (const r of P.rows) {
+    const first = SCREEN_SHAPES[r.ids[0]];
+    if (first) { firsts[safe(() => first.id, '')] = r.title; if (ensureFlow(page, r.title, first)) STATS.flows++; }
   }
   // protótipo: cliques que levam a outra tela da mesma página
   for (const n of NAV) {
     const dest = SCREEN_SHAPES[n.to];
     if (!dest) continue;
-    tryDo('interação → ' + n.to, () => { n.shape.addInteraction('click', { type: 'navigate-to', destination: dest }); STATS.interactions++; });
+    tryDo('interação → ' + n.to, () => { n.shape.addInteraction('click', { type: 'navigate-to', destination: dest }); STATS.interactions++; }, { to: n.to, from: safe(() => n.shape.name, '') });
+  }
+  await settle(null, 12000);
+  // o Penpot cria um fluxo automático quando uma interação sai de uma tela fora de qualquer fluxo; tiramos os que não são de uma linha
+  for (const f of flowsOf(page)) {
+    const sid = startId(f);
+    if (sid && firsts[sid]) { if (safe(() => f.name, '') !== firsts[sid]) tryDo('renomear fluxo', () => { f.name = firsts[sid]; }); continue; }
+    try { f.remove(); STATS.implicitFlowsRemoved++; } catch (e) { err('remover fluxo automático', e, { flow: safe(() => f.name, '') }); }
   }
   for (const r of P.rows) {
-    const first = SCREEN_SHAPES[r.ids[0]];
-    if (first) tryDo('fluxo ' + r.title, () => { page.createFlow(r.title, first); STATS.flows++; });
+    const first = SCREEN_SHAPES[r.ids[0]]; if (!first) continue;
+    if (!flowsOf(page).some(f => startId(f) === safe(() => first.id, null))) { if (ensureFlow(page, r.title, first)) STATS.flows++; }
   }
+  await verifyOverrides();
+  await settle(null, 12000);
+  for (const id of Object.keys(SCREEN_SHAPES)) { CTX.screen = id; tryDo('conferir layout ' + id, () => checkLayout(SCREEN_SHAPES[id], id)); }
+  CTX.screen = '';
   return page;
 }
 async function buildFlowsPage() {
+  CTX = { page: 'Fluxos', screen: '' }; OVR.length = 0;
   topText('Fluxos', 'display/4xl', 'foreground', 0, 0);
   topText(CHAINS.length + ' caminhos, com o caminho principal e cada erro ou desvio. Cada caixa é uma tela; o código (ex.: LG02) é o nome da tela nas outras páginas.', 'body/base', 'muted-foreground', 0, 56, 1400);
   const NODE_W = 240, NODE_H = 128, GAP = 170;
@@ -732,11 +964,13 @@ async function buildFlowsPage() {
     PROGRESS.done++;
     await sleep(5);
   }
+  await settle(null, 12000);
+  await verifyOverrides();
 }
 
-// ---------------------------------------------------------------- checks, cleanup, run
+// ---------------------------------------------------------------- checks, cleanup
 function fileCheck() {
-  const f = penpot.currentFile;
+  const f = safe(() => penpot.currentFile, null);
   if (!f) return { ok: false, why: 'Nenhum arquivo aberto.' };
   if (f.name !== FILE_NAME) return { ok: false, why: 'Este plugin só roda no arquivo "' + FILE_NAME + '". O arquivo aberto é "' + f.name + '". Nada foi alterado.' };
   const lib = findLibrary();
@@ -753,50 +987,187 @@ async function cleanup() {
   const emptyDefault = others.filter(p => { try { return /^(Page|Página) 1$/.test(p.name) && (p.root.children || []).length === 0; } catch (e) { return false; } });
   return { mine: mine, emptyDefault: emptyDefault, keep: others.length - emptyDefault.length };
 }
+
+// ---------------------------------------------------------------- diagnóstico (só leitura)
+function plain(v, depth) {
+  depth = depth || 0;
+  if (v == null || typeof v !== 'object') return v;
+  if (depth > 2) return '[objeto]';
+  if (Array.isArray(v)) return v.slice(0, 50).map(x => plain(x, depth + 1));
+  const o = {};
+  for (const k of Object.keys(v)) { const x = safe(() => v[k], undefined); if (typeof x !== 'function') o[k] = plain(x, depth + 1); }
+  return o;
+}
+function layerTree(s, depth, budget) {
+  if (!s || budget.n <= 0) return null;
+  budget.n--;
+  const node = { name: safe(() => s.name, '?'), type: safe(() => s.type, '?') };
+  if (node.type === 'text') node.characters = safe(() => s.characters, null);
+  if (safe(() => s.hidden, false)) node.hidden = true;
+  const w = safe(() => s.width, null), h = safe(() => s.height, null); if (w != null) { node.w = Math.round(w); node.h = Math.round(h); }
+  if (depth < 5) { const ks = kidsOf(s); if (ks.length) node.children = ks.map(k => layerTree(k, depth + 1, budget)).filter(Boolean); }
+  return node;
+}
+function describeComp(c, withLayers) {
+  const d = { id: safe(() => c.id, null), name: safe(() => c.name, null), path: safe(() => c.path, null) };
+  d.isVariant = safe(() => !!c.isVariant(), 'erro ao ler');
+  d.variantProps = plain(safe(() => c.variantProps, null));
+  d.variantError = safe(() => c.variantError, null);
+  d.ownKeys = safe(() => Object.keys(c), []);
+  if (withLayers) {
+    const mi = safe(() => c.mainInstance(), null);
+    d.mainInstance = mi ? layerTree(mi, 0, { n: 80 }) : 'não disponível';
+  }
+  return d;
+}
+function requiredCombos() {
+  const out = {};
+  const walk = (n) => {
+    if (!n) return;
+    if (n.t === 'C') {
+      const k = n.set + ' ' + JSON.stringify(n.props);
+      const e = out[k] = out[k] || { component: n.set, props: n.props, layers: {} };
+      for (const p of Object.keys(n.texts || {})) e.layers[p] = 'texto';
+      for (const p of (n.hide || [])) e.layers[p] = e.layers[p] || 'esconder';
+      if (n.goPath) e.layers[n.goPath] = e.layers[n.goPath] || 'interação';
+      for (const g of (n.gos || [])) e.layers[g[0]] = e.layers[g[0]] || 'interação';
+    }
+    for (const k of (n.kids || [])) walk(k);
+  };
+  for (const id of Object.keys(S)) { const sc = S[id]; if (sc.external) continue; try { walk(screenSpec(sc)); walk(noteSpec(sc)); } catch (e) { err('spec ' + id, e); } }
+  for (const st of Object.keys(BADGE)) walk(C('Badge', { Variant: BADGE[st][0] }, { texts: { Label: BADGE[st][1] } }));
+  return Object.values(out);
+}
+function diagnose() {
+  const t0 = Date.now();
+  ERRORS.length = 0; ERRLIST.length = 0; WARNINGS.length = 0;
+  const out = { tipo: 'diagnostico', plugin: PLUGIN_BUILD, quando: new Date().toISOString(), naoAlteraNada: true };
+  out.api = { version: safe(() => penpot.version, null), flags: plain(safe(() => penpot.flags, null)), temWaitForLayoutUpdate: safe(() => typeof penpot.waitForLayoutUpdate === 'function', false),
+    temViewport: !!safe(() => penpot.viewport, null), apiKeys: safe(() => Object.keys(penpot), []) };
+  const f = safe(() => penpot.currentFile, null);
+  out.arquivo = f ? { name: safe(() => f.name, null), id: safe(() => f.id, null), pages: (safe(() => f.pages, []) || []).map(p => ({ name: safe(() => p.name, ''), id: safe(() => p.id, ''), doPlugin: safe(() => p.getSharedPluginData(PD_NS, PD_KEY) === '1', false), flows: flowsOf(p).map(x => ({ name: safe(() => x.name, ''), start: safe(() => x.startingBoard && x.startingBoard.name, null) })) })) } : null;
+  out.bibliotecasConectadas = (safe(() => penpot.library.connected, []) || []).map(l => ({ name: safe(() => l.name, ''), id: safe(() => l.id, ''), componentes: safe(() => l.components.length, null) }));
+  const lib = findLibrary();
+  if (!lib) { out.biblioteca = null; out.problema = 'Biblioteca "' + LIB_NAME + '" não conectada.'; return finishDiag(out, t0); }
+  const listed = safe(() => lib.components, []) || [];
+  out.biblioteca = { name: safe(() => lib.name, ''), id: safe(() => lib.id, ''), componentesListados: listed.length };
+  out.componentes = [];
+  out.conjuntosDeVariantes = [];
+  for (const c of listed) {
+    const d = describeComp(c, true);
+    if (d.isVariant === true) {
+      const vs = safe(() => c.variants, null);
+      const set = { setName: d.name, setPath: d.path, primaryId: d.id, variantsId: vs ? safe(() => vs.id, null) : null, variantsKeys: vs ? safe(() => Object.keys(vs), []) : [] };
+      set.properties = vs ? plain(safe(() => vs.properties, null)) : null;
+      set.currentValues = {};
+      for (const p of (Array.isArray(set.properties) ? set.properties : [])) set.currentValues[p] = plain(safe(() => vs.currentValues(p), null));
+      let members = [];
+      if (vs) { try { members = vs.variantComponents() || []; } catch (e) { set.variantComponentsError = errMsg(e); } }
+      set.variantComponents = members.map(m => describeComp(m, false));
+      set.primary = d;
+      out.conjuntosDeVariantes.push(set);
+    } else out.componentes.push(d);
+  }
+  out.tipografias = (safe(() => lib.typographies, []) || []).map(t => ({ id: safe(() => t.id, ''), name: safe(() => t.name, ''), path: safe(() => t.path, ''), fontFamily: safe(() => t.fontFamily, ''), fontSize: safe(() => t.fontSize, ''), fontWeight: safe(() => t.fontWeight, ''), lineHeight: safe(() => t.lineHeight, ''), letterSpacing: safe(() => t.letterSpacing, ''), textTransform: safe(() => t.textTransform, '') }));
+  out.cores = (safe(() => lib.colors, []) || []).map(c => ({ id: safe(() => c.id, ''), name: safe(() => c.name, ''), path: safe(() => c.path, ''), color: safe(() => c.color, ''), opacity: safe(() => c.opacity, '') }));
+  // o que o plugin vai pedir, e se acha
+  indexLibrary(lib);
+  out.indice = Object.assign({}, LIBINFO);
+  out.pedidos = requiredCombos().map(rq => {
+    const r = resolveComp(rq.component, rq.props);
+    const row = { component: rq.component, props: rq.props, achou: r.comp ? (r.exact ? 'exato' : 'outra variante') : 'não existe' };
+    if (r.comp && !r.exact) { row.usaria = r.entry.props; row.disponiveis = availableValues(r.list); }
+    if (r.comp) {
+      const mi = safe(() => r.comp.mainInstance(), null);
+      row.camadasFaltando = [];
+      if (mi) for (const p of Object.keys(rq.layers)) { const hit = findIn(mi, p); if (!hit || (rq.layers[p] === 'texto' && safe(() => hit.type, '') !== 'text')) row.camadasFaltando.push(p + ' (' + rq.layers[p] + ')'); }
+      else row.camadasFaltando = ['instância principal não disponível para leitura'];
+    }
+    return row;
+  });
+  const typosNeeded = ['display/4xl', 'heading/2xl', 'heading/xl', 'heading/lg', 'body/base', 'body/sm', 'body/sm-medium', 'body/xs'];
+  out.tipografiasFaltando = typosNeeded.filter(t => !TYPOS[t]);
+  const colorsNeeded = Object.keys(FALLBACK_HEX);
+  out.coresFaltando = colorsNeeded.filter(c => !COLORS[c]);
+  return finishDiag(out, t0);
+}
+function finishDiag(out, t0) {
+  const ped = out.pedidos || [];
+  out.resumo = {
+    componentesListados: out.biblioteca ? out.biblioteca.componentesListados : 0,
+    componentesComVariantes: out.indice ? out.indice.expanded : 0,
+    conjuntosDeVariantes: out.conjuntosDeVariantes ? out.conjuntosDeVariantes.length : 0,
+    tipografias: out.tipografias ? out.tipografias.length : 0,
+    cores: out.cores ? out.cores.length : 0,
+    pedidos: ped.length,
+    pedidosExatos: ped.filter(p => p.achou === 'exato').length,
+    pedidosOutraVariante: ped.filter(p => p.achou === 'outra variante').length,
+    pedidosSemComponente: ped.filter(p => p.achou === 'não existe').length,
+    pedidosComCamadaFaltando: ped.filter(p => p.camadasFaltando && p.camadasFaltando.length).length,
+    tipografiasFaltando: (out.tipografiasFaltando || []).length,
+    coresFaltando: (out.coresFaltando || []).length,
+    erros: ERRLIST.length,
+    ms: Date.now() - t0 };
+  out.erros = ERRLIST.slice();
+  return out;
+}
+
+// ---------------------------------------------------------------- run
 let running = false;
+function buildLog(t0, extra) {
+  return Object.assign({ tipo: 'montagem', plugin: PLUGIN_BUILD, quando: new Date(t0).toISOString(), segundos: Math.round((Date.now() - t0) / 1000),
+    api: { version: safe(() => penpot.version, null), temWaitForLayoutUpdate: safe(() => typeof penpot.waitForLayoutUpdate === 'function', false) },
+    indice: Object.assign({}, LIBINFO), stats: Object.assign({}, STATS), usados: Object.assign({}, USED),
+    erros: ERRLIST.slice(), variantesNaoAchadas: FALLBACKS.slice(), avisos: WARNINGS.slice(), passos: LOG.slice() }, extra || {});
+}
 async function run() {
   if (running) return; running = true;
   const t0 = Date.now();
   for (const k in STATS) STATS[k] = 0;
   for (const k in USED) delete USED[k];
-  ERRORS.length = 0; LOG.length = 0;
+  ERRORS.length = 0; ERRLIST.length = 0; WARNINGS.length = 0; FALLBACKS.length = 0; LOG.length = 0; CTX = { page: '', screen: '' }; SETTLE_TIMEOUTS_IN_A_ROW = 0;
   try {
     try { penpot.flags.naturalChildOrdering = true; } catch (e) { err('flags', e); }
     const chk = fileCheck();
-    if (!chk.ok) { say(chk.why, { finished: true, failed: true }); return; }
+    if (!chk.ok) { say(chk.why, { finished: true, failed: true, log: buildLog(t0, { recusado: chk.why }) }); return; }
     LIB = chk.lib; indexLibrary(LIB);
     const nScreens = Object.values(S).filter(s => !s.external).length;
     PROGRESS = { done: 0, total: nScreens + CHAINS.length };
-    say('Biblioteca conectada: ' + LIB.name + ' (' + chk.comps + ' componentes).');
+    say('Biblioteca conectada: ' + LIB.name + ' (' + LIBINFO.listed + ' componentes listados, ' + LIBINFO.expanded + ' contando todas as variantes).');
     const old = await cleanup();
     if (old.mine.length) say('Vou substituir ' + old.mine.length + ' páginas feitas antes por este plugin. Outras páginas ficam como estão.');
     const first = await newPage('Fluxos');   // abre uma página nova antes de apagar as antigas
     for (const p of old.mine.concat(old.emptyDefault)) { tryDo('apagar página ' + p.name, () => p.remove()); await sleep(10); }
-    // a página "Fluxos" (primeira da lista) recebe o mapa no fim; primeiro as telas
-    const firstRef = first;
     for (const P of PAGES) {
       say('Página ' + P.name + '…');
       try { await buildScreenPage(P); } catch (e) { err('página ' + P.name, e); }
     }
-    await penpot.openPage(firstRef);
-    await waitFor(() => penpot.currentPage && penpot.currentPage.id === firstRef.id, 5000);
+    await penpot.openPage(first);
+    await waitFor(() => penpot.currentPage && penpot.currentPage.id === first.id, 5000);
     say('Página Fluxos…');
     try { await buildFlowsPage(); } catch (e) { err('página Fluxos', e); }
     const secs = Math.round((Date.now() - t0) / 1000);
-    const summary = 'Concluído em ' + secs + ' s. Páginas: ' + STATS.pages + ' · telas: ' + STATS.screens + ' · cópias de componentes: ' + STATS.copies +
-      ' · quadros com auto layout: ' + STATS.flexBoards + ' · interações: ' + STATS.interactions + ' · fluxos de protótipo: ' + STATS.flows + ' · setas: ' + STATS.arrows + ' · erros: ' + ERRORS.length;
-    say(summary, { finished: true, errors: ERRORS.slice(0, 200), stats: STATS, used: USED });
+    const summary = 'Concluído em ' + secs + ' s. Páginas: ' + STATS.pages + ' · telas: ' + STATS.screens + ' · cópias: ' + STATS.copies +
+      ' · interações: ' + STATS.interactions + ' · fluxos: ' + STATS.flows + ' · erros: ' + ERRORS.length + ' · variantes não achadas: ' + STATS.variantFallbacks +
+      ' · textos refeitos: ' + STATS.textOverridesFixed + ' · avisos de layout: ' + STATS.layoutWarnings;
+    say(summary, { finished: true, errors: ERRORS.slice(0, 300), stats: STATS, used: USED, log: buildLog(t0) });
   } catch (e) {
     err('run', e);
-    say('Falhou: ' + (e && e.message ? e.message : e), { finished: true, failed: true, errors: ERRORS.slice(0, 200) });
+    say('Falhou: ' + errMsg(e), { finished: true, failed: true, errors: ERRORS.slice(0, 300), log: buildLog(t0) });
   } finally { running = false; }
 }
-penpot.ui.open('Anota Treino — Login + Onboarding', UI_URL, { width: 340, height: 480 });
+penpot.ui.open('Anota Treino — Telas Login e Onboarding', UI_URL, { width: 360, height: 600 });
 penpot.ui.onMessage((msg) => {
   if (!msg) return;
   if (msg.type === 'check') {
     const c = fileCheck();
-    penpot.ui.sendMessage({ type: 'check', ok: c.ok, why: c.why, name: c.name, comps: c.comps });
+    penpot.ui.sendMessage({ type: 'check', ok: c.ok, why: c.why, name: c.name, comps: c.comps, plugin: PLUGIN_BUILD });
   }
   if (msg.type === 'generate') run();
+  if (msg.type === 'diagnose') {
+    if (running) return;
+    let out;
+    try { out = diagnose(); } catch (e) { out = { tipo: 'diagnostico', falhou: errMsg(e), erros: ERRLIST.slice() }; }
+    penpot.ui.sendMessage({ type: 'diagnose', log: out });
+  }
 });

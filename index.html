@@ -1,40 +1,92 @@
 <!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><title>Anota Treino — Login + Onboarding</title>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Anota Treino — Telas Login e Onboarding</title>
 <style>
  body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#1f1f1f;color:#eee;font-size:13px}
  h1{font-size:15px;margin:0 0 8px} p{color:#aaa;margin:0 0 12px;line-height:1.4}
  .warn{background:#2a2a2a;color:#ddd;border-radius:8px;padding:10px;margin-bottom:12px;line-height:1.4}
  .warn.bad{background:#3a1c1c;color:#f3b3b3}
- button{width:100%;padding:12px;border:0;border-radius:999px;background:#e5e5e5;color:#171717;font-weight:700;font-size:14px;cursor:pointer}
+ button{width:100%;padding:11px;border:0;border-radius:999px;background:#e5e5e5;color:#171717;font-weight:700;font-size:14px;cursor:pointer;margin-bottom:8px}
+ button.sec{background:transparent;color:#e5e5e5;border:1px solid #555}
  button:disabled{opacity:.45;cursor:default}
- #status{margin-top:12px;white-space:pre-wrap;color:#ccc;max-height:210px;overflow:auto;font-size:12px}
- progress{width:100%;margin-top:10px}
+ .row{display:flex;gap:8px} .row button{flex:1}
+ #counts{background:#262626;border-radius:8px;padding:10px;margin-top:4px;line-height:1.5;white-space:pre-wrap;font-size:12px}
+ #counts:empty{display:none}
+ #status{margin-top:10px;white-space:pre-wrap;color:#ccc;max-height:170px;overflow:auto;font-size:12px}
+ progress{width:100%;margin-top:4px}
+ .small{font-size:11px;color:#999;margin-top:6px}
 </style></head>
 <body>
- <h1>Anota Treino — Login + Onboarding</h1>
+ <h1>Anota Treino — Telas Login e Onboarding</h1>
  <p>Monta as páginas Fluxos, Onboarding, Login, Cadastro, Esqueci a senha e Estados e erros, usando cópias dos componentes da biblioteca conectada.</p>
  <div class="warn" id="warn">Verificando o arquivo…</div>
  <button id="go" disabled>Montar Login + Onboarding</button>
+ <div class="row">
+  <button id="diag" class="sec">Diagnóstico</button>
+  <button id="dl" class="sec" disabled>Baixar log</button>
+ </div>
+ <div class="small">Diagnóstico só lê a biblioteca e o arquivo; não muda nada.</div>
  <progress id="bar" max="100" value="0"></progress>
+ <div id="counts"></div>
  <div id="status">Pronto.</div>
 <script>
- const go=document.getElementById('go'), st=document.getElementById('status'), bar=document.getElementById('bar'), warn=document.getElementById('warn');
- go.addEventListener('click',()=>{ go.disabled=true; go.textContent='Montando…'; st.textContent='Iniciando…'; parent.postMessage({type:'generate'},'*'); });
+ const $=id=>document.getElementById(id);
+ const go=$('go'), diag=$('diag'), dl=$('dl'), st=$('status'), bar=$('bar'), warn=$('warn'), counts=$('counts');
+ const LOGS={diagnostico:null, montagem:null, versaoPlugin:null};
+ let checkOk=false;
+ function line(t){ st.textContent=t+'\n'+st.textContent; }
+ function stamp(){ const d=new Date(), z=n=>String(n).padStart(2,'0'); return d.getFullYear()+z(d.getMonth()+1)+z(d.getDate())+'-'+z(d.getHours())+z(d.getMinutes())+z(d.getSeconds()); }
+ go.addEventListener('click',()=>{ go.disabled=true; diag.disabled=true; go.textContent='Montando…'; st.textContent='Iniciando…'; counts.textContent=''; parent.postMessage({type:'generate'},'*'); });
+ diag.addEventListener('click',()=>{ diag.disabled=true; diag.textContent='Lendo…'; parent.postMessage({type:'diagnose'},'*'); });
+ dl.addEventListener('click',()=>{
+   const data=Object.assign({arquivoDeLog:'Anota Treino — Telas Login e Onboarding', baixadoEm:new Date().toISOString()}, LOGS);
+   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+   const url=URL.createObjectURL(blob);
+   const a=document.createElement('a'); a.href=url; a.download='anota-treino-login-onboarding-log-'+stamp()+'.json';
+   document.body.appendChild(a); a.click(); a.remove();
+   setTimeout(()=>URL.revokeObjectURL(url),5000);
+   line('Log baixado: '+a.download);
+ });
+ function showDiag(d){
+   const r=d.resumo||{};
+   counts.textContent='Diagnóstico ('+(d.plugin||'')+')\n'+
+     'Penpot: '+((d.api&&d.api.version)||'?')+'\n'+
+     'Componentes listados: '+(r.componentesListados||0)+' · com todas as variantes: '+(r.componentesComVariantes||0)+'\n'+
+     'Conjuntos de variantes: '+(r.conjuntosDeVariantes||0)+' · tipografias: '+(r.tipografias||0)+' · cores: '+(r.cores||0)+'\n'+
+     'Combinações pedidas pelo plugin: '+(r.pedidos||0)+' · exatas: '+(r.pedidosExatos||0)+' · outra variante: '+(r.pedidosOutraVariante||0)+' · sem componente: '+(r.pedidosSemComponente||0)+'\n'+
+     'Com camada faltando: '+(r.pedidosComCamadaFaltando||0)+' · tipografias faltando: '+(r.tipografiasFaltando||0)+' · cores faltando: '+(r.coresFaltando||0)+' · erros: '+(r.erros||0)+
+     (d.problema?'\n'+d.problema:'')+(d.falhou?'\nFalhou: '+d.falhou:'');
+ }
+ function showBuild(l){
+   const s=l.stats||{};
+   counts.textContent='Montagem ('+(l.plugin||'')+') em '+(l.segundos||0)+' s\n'+
+     'Páginas: '+(s.pages||0)+' · telas: '+(s.screens||0)+' · cópias: '+(s.copies||0)+' · textos: '+(s.texts||0)+'\n'+
+     'Interações: '+(s.interactions||0)+' · fluxos: '+(s.flows||0)+' · fluxos automáticos tirados: '+(s.implicitFlowsRemoved||0)+'\n'+
+     'Erros: '+((l.erros||[]).length)+' · variantes não achadas: '+(s.variantFallbacks||0)+'\n'+
+     'Textos trocados: '+(s.textOverrides||0)+' · refeitos: '+(s.textOverridesFixed||0)+' · que não ficaram: '+(s.textOverridesFailed||0)+'\n'+
+     'Avisos de layout: '+(s.layoutWarnings||0)+' · esperas de layout: '+(s.layoutWaits||0)+' (estouraram: '+(s.layoutWaitTimeouts||0)+')'+
+     (l.recusado?'\n'+l.recusado:'');
+ }
  window.addEventListener('message',ev=>{
    const m=ev.data; if(!m) return;
    if(m.type==='check'){
-     if(!m.ok){ warn.textContent=m.why; warn.className='warn bad'; go.disabled=true; return; }
-     warn.className='warn';
-     warn.textContent='Arquivo "'+m.name+'" com a biblioteca conectada ('+m.comps+' componentes). Se você já rodou este plugin aqui, as páginas que ele criou antes são apagadas e refeitas. Outras páginas ficam como estão.';
+     LOGS.versaoPlugin=m.plugin||null;
+     if(!m.ok){ warn.textContent=m.why; warn.className='warn bad'; go.disabled=true; checkOk=false; return; }
+     checkOk=true; warn.className='warn';
+     warn.textContent='Arquivo "'+m.name+'" com a biblioteca conectada. Se você já rodou este plugin aqui, as páginas que ele criou antes são apagadas e refeitas. Outras páginas ficam como estão.';
      go.disabled=false; return;
+   }
+   if(m.type==='diagnose'){
+     LOGS.diagnostico=m.log; diag.disabled=false; diag.textContent='Diagnóstico'; dl.disabled=false;
+     showDiag(m.log||{}); line('Diagnóstico pronto. Use "Baixar log" para salvar.'); return;
    }
    if(m.type!=='progress') return;
    if(m.total){bar.max=m.total; bar.value=m.done;}
-   st.textContent=m.msg+'\n'+st.textContent;
+   line(m.msg);
    if(m.finished){
-     go.textContent=m.failed?'Não rodou — ver status':'Concluído';
-     if(m.errors&&m.errors.length) st.textContent='Erros ('+m.errors.length+'):\n'+m.errors.join('\n')+'\n\n'+st.textContent;
-     window.__result=m;
+     go.textContent=m.failed?'Não rodou — ver status':'Concluído (pode rodar de novo)';
+     go.disabled=!checkOk; diag.disabled=false;
+     if(m.log){ LOGS.montagem=m.log; dl.disabled=false; showBuild(m.log); }
+     if(m.errors&&m.errors.length) line('Erros ('+m.errors.length+'):\n'+m.errors.slice(0,60).join('\n'));
    }
  });
  parent.postMessage({type:'check'},'*');
